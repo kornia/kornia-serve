@@ -1,0 +1,5 @@
+git+https://github.com/farm-ng/farm-ng-core.git
+grpcio-tools
+opencv-python
+numpy
+kornia-rs
