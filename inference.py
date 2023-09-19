@@ -10,63 +10,69 @@ from farm_ng.core.event_service_pb2 import (
 )
 from farm_ng.core.event_client import EventClient
 from farm_ng.core import uri_pb2
-from google.protobuf.message import Message
+from kornia_rs import ImageDecoder
+import numpy as np
+import cv2
+import image_pb2
 
 
-class CameraInferenceService:
+class InferenceService:
     def __init__(
         self,
         event_service: EventServiceGrpc,
-        configs: EventServiceConfig
+        camera_client: EventClient,
     ) -> None:
-        self._camera_client = EventClient(config)
+        self._camera_client = camera_client
         self._event_service = event_service
-        self._event_service.request_reply_handler = self._request_reply_handler
+
+        self._image_decoder = ImageDecoder()
+
+    async def viz_image(self, image: np.ndarray) -> None:
+        cv2.imshow("frame", image)
+        cv2.waitKey(1)
 
     async def run(self):
         async for event, message in self._camera_client.subscribe(
             SubscribeRequest(uri=uri_pb2.Uri(path="/frame"), every_n=1),
             decode=True
         ):
-            print(event)
-            image_tensor = kornia.io.decode_image(
+            # decode the image
+            image_dl = self._image_decoder.decode(
                 message.image_data,
-                message.encoding_type,
             )
-            output = self.model(image_tensor)
-            output_proto = ...
+
+            image_np = np.from_dlpack(image_dl)
 
             # NOTE: you can read later from browser or fastapi
             await self._event_service.publish(
-                "/results", output_proto
+                "/results",
+                image_pb2.ImageSize(
+                    height=image_np.shape[0],
+                    width=image_np.shape[1],
+                ),
             )
+
+            # visualize the image in a separate task
+            asyncio.create_task(self.viz_image(image_np))
     
-    async def request_reply_handler(
-        self, request: RequestReplyRequest
-    ) -> Message:
-        if request.event.uri.path == "/load_model":
-            self.event_service.logger.info("Loading model")
-            # query_dict = parser_event_uri(request.event.uri.query)
-            # self.model = kornia.models.load_model(
-            #     query_dict["model_path"]
-            # )
-            # if query_dict["compile"]:
-            #     self.model = kornia.models.compile_model(
-            #         self.model,
-            #     )
+    async def serve(self):
+        await asyncio.gather(
+            self.run(),
+            self._event_service.serve(),
+        )
 
 
 if __name__ == "__main__":
 
     camera_config = EventServiceConfig(
         name="camera",
-        port=50051,
+        port=5001,
         host="localhost",
     )
 
     inference_config = EventServiceConfig(
         name="inference",
-        port=50052,
+        port=5002,
         host="localhost"
     )
 
@@ -74,14 +80,16 @@ if __name__ == "__main__":
         grpc.aio.server(), inference_config
     )
 
-    inference_server = CameraInferenceService(
-        event_service, camera_config
+    camera_client = EventClient(camera_config)
+
+    inference_service = InferenceService(
+        event_service, camera_client
     )
 
     loop = asyncio.get_event_loop()
 
     try:
-        loop.run_until_complete(inference_server.run())
+        loop.run_until_complete(inference_service.serve())
     except KeyboardInterrupt:
         pass
     finally:

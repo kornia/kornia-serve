@@ -5,17 +5,17 @@ import numpy as np
 from kornia_rs import ImageEncoder
 import grpc
 
-from farm_ng.core.events_service import (
-    EventsServiceGrpc,
-    EventsServiceConfig,
+from farm_ng.core.event_service import (
+    EventServiceGrpc,
+    EventServiceConfig,
 )
 from farm_ng.core.stamp import StampSemantics, get_monotonic_now
 from farm_ng.core.timestamp_pb2 import Timestamp
 import image_pb2
 
 
-class CameraGrabber:
-    def __init__(self, events_service: EventsServiceGrpc) -> None:
+class CameraGrabberService:
+    def __init__(self, events_service: EventServiceGrpc) -> None:
         self._events_service = events_service
 
         self._grabber: cv2.VideoCapture | None = None
@@ -50,7 +50,9 @@ class CameraGrabber:
                 frame.tobytes(), frame.shape
             )
 
-            host_recv_stamp: Timestamp = get_monotonic_now(StampSemantics.DRIVER_RECEIVE)
+            host_recv_stamp: Timestamp = get_monotonic_now(
+                StampSemantics.DRIVER_RECEIVE
+            )
 
             # convert the frame to a protobuf message
             frame_proto = image_pb2.Image(
@@ -72,31 +74,30 @@ class CameraGrabber:
 
             self._frame_counter += 1
 
-
-async def serve(grabber: CameraGrabber, events_service):
-    async_tasks: list[asyncio.Task] = []
-    async_tasks.append(asyncio.create_task(grabber.run()))
-    async_tasks.append(asyncio.create_task(events_service.run()))
-    await asyncio.gather(*async_tasks)
+    async def serve(self) -> None:
+        async_tasks: list[asyncio.Task] = []
+        async_tasks.append(asyncio.create_task(self.run()))
+        async_tasks.append(asyncio.create_task(self._events_service.serve()))
+        await asyncio.gather(*async_tasks)
 
 
 if __name__ == "__main__":
 
-    server_config = EventsServiceConfig(
+    server_config = EventServiceConfig(
         port=5001,
         host="localhost",
     )
 
-    events_service = EventsServiceGrpc(
+    events_service = EventServiceGrpc(
         grpc.aio.server(), server_config
     )
 
-    grabber = CameraGrabber(events_service)
+    camera_service = CameraGrabberService(events_service)
 
     loop = asyncio.get_event_loop()
 
     try:
-        loop.run_until_complete(serve(grabber, events_service))
+        loop.run_until_complete(camera_service.serve())
     except KeyboardInterrupt:
         pass
     finally:
